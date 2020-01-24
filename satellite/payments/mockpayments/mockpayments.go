@@ -8,7 +8,7 @@ import (
 
 	"github.com/skyrings/skyring-common/tools/uuid"
 	"github.com/zeebo/errs"
-	"gopkg.in/spacemonkeygo/monkit.v2"
+	monkit "gopkg.in/spacemonkeygo/monkit.v2"
 
 	"storj.io/common/memory"
 	"storj.io/storj/satellite/payments"
@@ -103,6 +103,20 @@ func (accounts *accounts) PopulatePromotionalCoupons(ctx context.Context, durati
 	defer mon.Task()(&ctx, duration, amount, projectLimit)(&err)
 
 	return nil
+}
+
+// CreditBalance returns amount of funds in cents of user by ID.
+func (accounts *accounts) CreditBalance(ctx context.Context, userID uuid.UUID) (amount int64, err error) {
+	defer mon.Task()(&ctx, userID)(&err)
+
+	return amount, nil
+}
+
+// Credits return list of all credits of specified payment account.
+func (accounts *accounts) Credits(ctx context.Context, userID uuid.UUID) (credits []payments.Credit, err error) {
+	defer mon.Task()(&ctx, userID)(&err)
+
+	return credits, nil
 }
 
 // List returns a list of credit cards for a given payment account.

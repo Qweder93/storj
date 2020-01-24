@@ -58,6 +58,7 @@ type Service struct {
 	PerObjectPrice int64
 	EgressPrice    int64
 	TBhPrice       int64
+	BonusRate      int64
 
 	mu       sync.Mutex
 	rates    coinpayments.CurrencyRateInfos
@@ -94,6 +95,7 @@ func NewService(log *zap.Logger, config Config, db DB, projectsDB console.Projec
 		coinPayments:   coinPaymentsClient,
 		TBhPrice:       tbhPrice,
 		PerObjectPrice: perObjectPrice,
+		BonusRate:      10,
 		EgressPrice:    egressPrice,
 	}
 }
@@ -270,6 +272,17 @@ func (service *Service) applyTransactionBalance(ctx context.Context, tx Transact
 
 	// TODO: 0 amount will return an error, how to handle that?
 	_, err = service.stripeClient.CustomerBalanceTransactions.New(params)
+	if err != nil {
+		return err
+	}
+
+	credit := payments.Credit{
+		UserID:        tx.AccountID,
+		Amount:        cents / service.BonusRate,
+		TransactionID: tx.ID,
+	}
+
+	err = service.db.Credits().InsertCredit(ctx, credit)
 	return err
 }
 
@@ -361,6 +374,7 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 
 	var records []CreateProjectRecord
 	var usages []CouponUsage
+	var spendings []Spending
 	for _, project := range projects {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -389,16 +403,18 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 			},
 		)
 
-		coupons, err := service.db.Coupons().ListByProjectID(ctx, project.ID)
-		if err != nil {
-			return err
-		}
-
 		egressPrice := usage.Egress * service.EgressPrice / int64(memory.TB)
 		objectCountPrice := int64(usage.ObjectCount * float64(service.PerObjectPrice))
 		storageGbHrsPrice := int64(usage.Storage*float64(service.TBhPrice)) / int64(memory.TB)
 
 		currentUsagePrice := egressPrice + objectCountPrice + storageGbHrsPrice
+
+		coupons, err := service.db.Coupons().ListByProjectID(ctx, project.ID)
+		if err != nil {
+			return err
+		}
+
+		amountToChargeFromCoupon := currentUsagePrice
 
 		// TODO: only for 1 coupon per project
 		for _, coupon := range coupons {
@@ -416,20 +432,42 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 			}
 			remaining := coupon.Amount - alreadyChargedAmount
 
-			if currentUsagePrice >= remaining {
-				currentUsagePrice = remaining
+			if amountToChargeFromCoupon >= remaining {
+				amountToChargeFromCoupon = remaining
 			}
 
 			usages = append(usages, CouponUsage{
 				Period:   start,
-				Amount:   currentUsagePrice,
+				Amount:   amountToChargeFromCoupon,
 				Status:   CouponUsageStatusUnapplied,
 				CouponID: coupon.ID,
 			})
 		}
+
+		leftAfterCoupons := currentUsagePrice - amountToChargeFromCoupon
+
+		userBonuses, err := service.db.Credits().Balance(ctx, project.OwnerID)
+		if err != nil {
+			return err
+		}
+
+		if userBonuses > 0 {
+			if leftAfterCoupons >= userBonuses {
+				leftAfterCoupons = userBonuses
+			}
+
+			amountChargedFromBonuses := leftAfterCoupons
+
+			spendings = append(spendings, Spending{
+				Amount:    amountChargedFromBonuses,
+				UserID:    project.OwnerID,
+				ProjectID: project.ID,
+				Status:    int(SpendingPrepared),
+			})
+		}
 	}
 
-	return service.db.ProjectRecords().Create(ctx, records, usages, start, end)
+	return service.db.ProjectRecords().Create(ctx, records, usages, spendings, start, end)
 }
 
 // InvoiceApplyProjectRecords iterates through unapplied invoice project records and creates invoice line items
@@ -629,6 +667,87 @@ func (service *Service) createInvoiceCouponItems(ctx context.Context, coupon pay
 
 	projectItem.AddMetadata("projectID", coupon.ProjectID.String())
 	projectItem.AddMetadata("couponID", coupon.ID.String())
+
+	_, err = service.stripeClient.InvoiceItems.New(projectItem)
+
+	return err
+}
+
+// InvoiceApplyCredits iterates through credits with status false of project and creates invoice line items
+// for stripe customer.
+func (service *Service) InvoiceApplyCredits(ctx context.Context) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	const limit = 25
+	before := time.Now().UTC()
+
+	spendingsPage, err := service.db.Credits().ListSpendingsPaged(ctx, 0, 0, limit, before)
+	if err != nil {
+		return Error.Wrap(err)
+	}
+
+	if err = service.applySpendings(ctx, spendingsPage.Spendings); err != nil {
+		return Error.Wrap(err)
+	}
+
+	for spendingsPage.Next {
+		if err = ctx.Err(); err != nil {
+			return Error.Wrap(err)
+		}
+
+		spendingsPage, err = service.db.Credits().ListSpendingsPaged(ctx, 0, spendingsPage.NextOffset, limit, before)
+		if err != nil {
+			return Error.Wrap(err)
+		}
+
+		if err = service.applySpendings(ctx, spendingsPage.Spendings); err != nil {
+			return Error.Wrap(err)
+		}
+	}
+
+	return nil
+}
+
+// applyCredits applies concrete spending as invoice line item.
+func (service *Service) applySpendings(ctx context.Context, spendings []Spending) (err error) {
+	defer mon.Task()(&ctx)(&err)
+
+	for _, spending := range spendings {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+
+		if err = service.createInvoiceCreditItems(ctx, spending); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// createInvoiceItems consumes invoice project record and creates invoice line items for stripe customer.
+func (service *Service) createInvoiceCreditItems(ctx context.Context, spending Spending) (err error) {
+	defer mon.Task()(&ctx, spending)(&err)
+
+	err = service.db.Credits().ApplySpending(ctx, spending.ID, 1)
+	if err != nil {
+		return err
+	}
+	customerID, err := service.db.Customers().GetCustomerID(ctx, spending.UserID)
+
+	projectItem := &stripe.InvoiceItemParams{
+		Amount:      stripe.Int64(-spending.Amount),
+		Currency:    stripe.String(string(stripe.CurrencyUSD)),
+		Customer:    stripe.String(customerID),
+		Description: stripe.String(fmt.Sprintf("Discount from credits")),
+		Period: &stripe.InvoiceItemPeriodParams{
+			End:   stripe.Int64(spending.Created.AddDate(0, 1, 0).Unix()),
+			Start: stripe.Int64(spending.Created.Unix()),
+		},
+	}
+
+	projectItem.AddMetadata("projectID", spending.ProjectID.String())
+	projectItem.AddMetadata("userID", spending.UserID.String())
 
 	_, err = service.stripeClient.InvoiceItems.New(projectItem)
 

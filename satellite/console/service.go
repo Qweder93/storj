@@ -204,6 +204,7 @@ func (payments PaymentsService) RemoveCreditCard(ctx context.Context, cardID str
 	return payments.service.accounts.CreditCards().Remove(ctx, auth.User.ID, cardID)
 }
 
+// BillingHistory returns a list of invoices, transactions and all others billing history items for payment account.
 // BillingHistory returns a list of billing history items for payment account.
 func (payments PaymentsService) BillingHistory(ctx context.Context) (billingHistory []*BillingHistoryItem, err error) {
 	defer mon.Task()(&ctx)(&err)
@@ -282,6 +283,23 @@ func (payments PaymentsService) BillingHistory(ctx context.Context) (billingHist
 				Link:        "",
 				Start:       coupon.Created,
 				Type:        Coupon,
+			},
+		)
+	}
+
+	credits, err := payments.service.accounts.Credits(ctx, auth.User.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, credit := range credits {
+		billingHistory = append(billingHistory,
+			&BillingHistoryItem{
+				Description: "10% deposit bonus",
+				Amount:      credit.Amount,
+				Status:      "Added to balance",
+				Start:       credit.Created,
+				Type:        Credits,
 			},
 		)
 	}

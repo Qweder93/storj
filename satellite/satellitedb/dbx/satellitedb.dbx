@@ -1107,3 +1107,62 @@ update coupon_usage (
     where coupon_usage.coupon_id = ?
     where coupon_usage.period = ?
 )
+
+model credit (
+    key transaction_id
+
+    field user_id         blob
+    field transaction_id  text
+    field amount          int64
+
+    field created_at timestamp ( autoinsert )
+)
+
+create credit ()
+read one (
+    select credit
+    where credit.transaction_id = ?
+)
+read all (
+    select credit
+    where credit.user_id = ?
+    orderby desc credit.created_at
+)
+read limitoffset (
+    select credit
+    where credit.user_id = ?
+    where credit.created_at <= ?
+    orderby desc credit.created_at
+)
+
+model spending (
+    key id
+
+    field id         blob
+    field user_id    blob
+    field project_id blob
+    field amount     int64
+    field status     int   ( updatable )
+
+    field created_at timestamp ( autoinsert )
+)
+
+create spending ()
+update spending (
+    where spending.id = ?
+)
+read one (
+    select spending
+    where spending.id = ?
+)
+read all (
+    select spending
+    where spending.user_id = ?
+    orderby desc spending.created_at
+)
+read limitoffset (
+    select spending
+    where spending.created_at <= ?
+    where spending.status = ?
+    orderby desc spending.created_at
+)

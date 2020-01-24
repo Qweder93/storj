@@ -33,6 +33,12 @@ type Accounts interface {
 	// Coupons return list of all coupons of specified payment account.
 	Coupons(ctx context.Context, userID uuid.UUID) ([]Coupon, error)
 
+	// CreditBalance return amount of credits on user's balance.
+	CreditBalance(ctx context.Context, userID uuid.UUID) (int64, error)
+
+	// Credits return list of all credits of specified payment account.
+	Credits(ctx context.Context, userID uuid.UUID) ([]Credit, error)
+
 	// PopulatePromotionalCoupons is used to populate promotional coupons through all active users who already have
 	// a project, payment method and do not have a promotional coupon yet.
 	// And updates project limits to selected size.

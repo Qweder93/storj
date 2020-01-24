@@ -42,7 +42,7 @@ type invoiceProjectRecords struct {
 }
 
 // Create creates new invoice project record in the DB.
-func (db *invoiceProjectRecords) Create(ctx context.Context, records []stripecoinpayments.CreateProjectRecord, couponUsages []stripecoinpayments.CouponUsage, start, end time.Time) (err error) {
+func (db *invoiceProjectRecords) Create(ctx context.Context, records []stripecoinpayments.CreateProjectRecord, couponUsages []stripecoinpayments.CouponUsage, spendings []stripecoinpayments.Spending, start, end time.Time) (err error) {
 	defer mon.Task()(&ctx)(&err)
 
 	return db.db.WithTx(ctx, func(ctx context.Context, tx *dbx.Tx) error {
@@ -62,6 +62,7 @@ func (db *invoiceProjectRecords) Create(ctx context.Context, records []stripecoi
 				dbx.StripecoinpaymentsInvoiceProjectRecord_PeriodEnd(end),
 				dbx.StripecoinpaymentsInvoiceProjectRecord_State(invoiceProjectRecordStateUnapplied.Int()),
 			)
+
 			if err != nil {
 				return err
 			}
@@ -79,6 +80,21 @@ func (db *invoiceProjectRecords) Create(ctx context.Context, records []stripecoi
 				return err
 			}
 		}
+
+		for _, spending := range spendings {
+			_, err = db.db.Create_Spending(
+				ctx,
+				dbx.Spending_Id(spending.ID[:]),
+				dbx.Spending_UserId(spending.UserID[:]),
+				dbx.Spending_ProjectId(spending.ProjectID[:]),
+				dbx.Spending_Amount(spending.Amount),
+				dbx.Spending_Status(spending.Status),
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 }

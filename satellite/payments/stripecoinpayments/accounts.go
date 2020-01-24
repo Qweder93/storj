@@ -86,7 +86,16 @@ func (accounts *accounts) Balance(ctx context.Context, userID uuid.UUID) (_ int6
 		couponsAmount += coupon.Amount - alreadyUsed
 	}
 
-	return -c.Balance + couponsAmount, nil
+	creditBalance, err := accounts.service.db.Credits().Balance(ctx, userID)
+	if err != nil {
+		return 0, Error.Wrap(err)
+	}
+
+	if creditBalance < 0 {
+		return 0, Error.New("credit balance can't be < 0")
+	}
+
+	return -c.Balance + couponsAmount + creditBalance, nil
 }
 
 // AddCoupon attaches a coupon for payment account.
@@ -193,6 +202,20 @@ func (accounts *accounts) Coupons(ctx context.Context, userID uuid.UUID) (coupon
 	coupons, err = accounts.service.db.Coupons().ListByUserID(ctx, userID)
 
 	return coupons, Error.Wrap(err)
+}
+
+// CreditBalance returns amount of funds in cents of user by ID.
+func (accounts *accounts) CreditBalance(ctx context.Context, userID uuid.UUID) (amount int64, err error) {
+	defer mon.Task()(&ctx, userID)(&err)
+
+	return accounts.service.db.Credits().Balance(ctx, userID)
+}
+
+// Credits returns list of all credits of specified payment account.s
+func (accounts *accounts) Credits(ctx context.Context, userID uuid.UUID) (credits []payments.Credit, err error) {
+	defer mon.Task()(&ctx, userID)(&err)
+
+	return accounts.service.db.Credits().ListCredits(ctx, userID)
 }
 
 // PopulatePromotionalCoupons is used to populate promotional coupons through all active users who already have
