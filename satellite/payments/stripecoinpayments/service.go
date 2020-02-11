@@ -403,6 +403,7 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 
 	var records []CreateProjectRecord
 	var usages []CouponUsage
+	var creditsSpendings []CreditsSpending
 	for _, project := range projects {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -467,9 +468,35 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 				CouponID: coupon.ID,
 			})
 		}
+
+		leftAfterCoupons := currentUsagePrice - amountToChargeFromCoupon
+		if leftAfterCoupons == 0 {
+			return service.db.ProjectRecords().Create(ctx, records, usages, creditsSpendings, start, end)
+		}
+
+		userBonuses, err := service.db.Credits().Balance(ctx, project.OwnerID)
+
+		if err != nil {
+			return err
+		}
+
+		if userBonuses > 0 {
+			if leftAfterCoupons >= userBonuses {
+				leftAfterCoupons = userBonuses
+			}
+
+			amountChargedFromBonuses := leftAfterCoupons
+
+			creditsSpendings = append(creditsSpendings, CreditsSpending{
+				Amount:    amountChargedFromBonuses,
+				UserID:    project.OwnerID,
+				ProjectID: project.ID,
+				Status:    CreditsSpendingStatusUnapplied,
+			})
+		}
 	}
 
-	return service.db.ProjectRecords().Create(ctx, records, usages, start, end)
+	return service.db.ProjectRecords().Create(ctx, records, usages, creditsSpendings, start, end)
 }
 
 // InvoiceApplyProjectRecords iterates through unapplied invoice project records and creates invoice line items
@@ -631,7 +658,7 @@ func (service *Service) applyCoupons(ctx context.Context, usages []CouponUsage) 
 	return nil
 }
 
-// createInvoiceItems consumes invoice project record and creates invoice line items for stripe customer.
+// createInvoiceCouponItems consumes invoice project record and creates invoice line items for stripe customer.
 func (service *Service) createInvoiceCouponItems(ctx context.Context, coupon payments.Coupon, usage CouponUsage, customerID string) (err error) {
 	defer mon.Task()(&ctx, customerID, coupon)(&err)
 
@@ -722,11 +749,11 @@ func (service *Service) applySpendings(ctx context.Context, spendings []CreditsS
 	return nil
 }
 
-// createInvoiceItems consumes invoice project record and creates invoice line items for stripe customer.
+// createInvoiceCreditItem consumes invoice project record and creates invoice line items for stripe customer.
 func (service *Service) createInvoiceCreditItem(ctx context.Context, spending CreditsSpending) (err error) {
 	defer mon.Task()(&ctx, spending)(&err)
 
-	err = service.db.Credits().ApplyCreditsSpending(ctx, spending.ID, int(CreditsSpendingStatusApplied))
+	err = service.db.Credits().ApplyCreditsSpending(ctx, spending.ID)
 	if err != nil {
 		return err
 	}
