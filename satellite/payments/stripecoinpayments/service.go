@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"github.com/skyrings/skyring-common/tools/uuid"
 	"github.com/spacemonkeygo/monkit/v3"
 	"github.com/stripe/stripe-go"
 	"github.com/stripe/stripe-go/client"
@@ -403,6 +404,7 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 
 	var records []CreateProjectRecord
 	var usages []CouponUsage
+	var creditsSpendings []CreditsSpending
 	for _, project := range projects {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -440,36 +442,70 @@ func (service *Service) createProjectRecords(ctx context.Context, projects []con
 
 		amountToChargeFromCoupon := currentUsagePrice
 
-		// TODO: only for 1 coupon per project
-		for _, coupon := range coupons {
-			if coupon.IsExpired() {
-				if err = service.db.Coupons().Update(ctx, coupon.ID, payments.CouponExpired); err != nil {
-					return err
+		if coupons != nil {
+			// TODO: only for 1 coupon per project
+			for _, coupon := range coupons {
+				if coupon.IsExpired() {
+					if err = service.db.Coupons().Update(ctx, coupon.ID, payments.CouponExpired); err != nil {
+						return err
+					}
+
+					continue
 				}
 
-				continue
+				alreadyChargedAmount, err := service.db.Coupons().TotalUsage(ctx, coupon.ID)
+				if err != nil {
+					return err
+				}
+				remaining := coupon.Amount - alreadyChargedAmount
+
+				if amountToChargeFromCoupon >= remaining {
+					amountToChargeFromCoupon = remaining
+				}
+
+				usages = append(usages, CouponUsage{
+					Period:   start,
+					Amount:   amountToChargeFromCoupon,
+					Status:   CouponUsageStatusUnapplied,
+					CouponID: coupon.ID,
+				})
+			}
+		} else {
+			amountToChargeFromCoupon = 0
+		}
+
+		leftAfterCoupons := currentUsagePrice - amountToChargeFromCoupon
+		if leftAfterCoupons == 0 {
+			continue
+		}
+
+		userBonuses, err := service.db.Credits().Balance(ctx, project.OwnerID)
+		if err != nil {
+			return err
+		}
+
+		if userBonuses > 0 {
+			if leftAfterCoupons >= userBonuses {
+				leftAfterCoupons = userBonuses
 			}
 
-			alreadyChargedAmount, err := service.db.Coupons().TotalUsage(ctx, coupon.ID)
+			amountChargedFromBonuses := leftAfterCoupons
+			creditSpendingID, err := uuid.New()
 			if err != nil {
 				return err
 			}
-			remaining := coupon.Amount - alreadyChargedAmount
 
-			if amountToChargeFromCoupon >= remaining {
-				amountToChargeFromCoupon = remaining
-			}
-
-			usages = append(usages, CouponUsage{
-				Period:   start,
-				Amount:   amountToChargeFromCoupon,
-				Status:   CouponUsageStatusUnapplied,
-				CouponID: coupon.ID,
+			creditsSpendings = append(creditsSpendings, CreditsSpending{
+				ID:        *creditSpendingID,
+				Amount:    amountChargedFromBonuses,
+				UserID:    project.OwnerID,
+				ProjectID: project.ID,
+				Status:    CreditsSpendingStatusUnapplied,
 			})
 		}
 	}
 
-	return service.db.ProjectRecords().Create(ctx, records, usages, start, end)
+	return service.db.ProjectRecords().Create(ctx, records, usages, creditsSpendings, start, end)
 }
 
 // InvoiceApplyProjectRecords iterates through unapplied invoice project records and creates invoice line items
@@ -631,7 +667,7 @@ func (service *Service) applyCoupons(ctx context.Context, usages []CouponUsage) 
 	return nil
 }
 
-// createInvoiceItems consumes invoice project record and creates invoice line items for stripe customer.
+// createInvoiceCouponItems consumes invoice project record and creates invoice line items for stripe customer.
 func (service *Service) createInvoiceCouponItems(ctx context.Context, coupon payments.Coupon, usage CouponUsage, customerID string) (err error) {
 	defer mon.Task()(&ctx, customerID, coupon)(&err)
 
@@ -678,7 +714,7 @@ func (service *Service) InvoiceApplyCredits(ctx context.Context) (err error) {
 	const limit = 25
 	before := time.Now().UTC()
 
-	spendingsPage, err := service.db.Credits().ListCreditsSpendingsPaged(ctx, int(CreditsSpendingStatusUnapplied), 0, limit, before)
+	spendingsPage, err := service.db.Credits().ListCreditsSpendingsPaged(ctx, CreditsSpendingStatusUnapplied, 0, limit, before)
 	if err != nil {
 		return Error.Wrap(err)
 	}
@@ -692,7 +728,7 @@ func (service *Service) InvoiceApplyCredits(ctx context.Context) (err error) {
 			return Error.Wrap(err)
 		}
 
-		spendingsPage, err = service.db.Credits().ListCreditsSpendingsPaged(ctx, int(CreditsSpendingStatusUnapplied), spendingsPage.NextOffset, limit, before)
+		spendingsPage, err = service.db.Credits().ListCreditsSpendingsPaged(ctx, CreditsSpendingStatusUnapplied, spendingsPage.NextOffset, limit, before)
 		if err != nil {
 			return Error.Wrap(err)
 		}
@@ -722,11 +758,11 @@ func (service *Service) applySpendings(ctx context.Context, spendings []CreditsS
 	return nil
 }
 
-// createInvoiceItems consumes invoice project record and creates invoice line items for stripe customer.
+// createInvoiceCreditItem consumes invoice project record and creates invoice line items for stripe customer.
 func (service *Service) createInvoiceCreditItem(ctx context.Context, spending CreditsSpending) (err error) {
 	defer mon.Task()(&ctx, spending)(&err)
 
-	err = service.db.Credits().ApplyCreditsSpending(ctx, spending.ID, int(CreditsSpendingStatusApplied))
+	err = service.db.Credits().ApplyCreditsSpending(ctx, spending.ID)
 	if err != nil {
 		return err
 	}
@@ -736,7 +772,7 @@ func (service *Service) createInvoiceCreditItem(ctx context.Context, spending Cr
 		Amount:      stripe.Int64(-spending.Amount),
 		Currency:    stripe.String(string(stripe.CurrencyUSD)),
 		Customer:    stripe.String(customerID),
-		Description: stripe.String(fmt.Sprintf("Discount from credits")),
+		Description: stripe.String(fmt.Sprintf("Promotional credits (bonuses for STORJ deposit)")),
 		Period: &stripe.InvoiceItemPeriodParams{
 			End:   stripe.Int64(spending.Created.AddDate(0, 1, 0).Unix()),
 			Start: stripe.Int64(spending.Created.Unix()),
