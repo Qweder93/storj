@@ -7,7 +7,6 @@ require (
 	github.com/btcsuite/btcutil v0.0.0-20180706230648-ab6388e0c60a
 	github.com/garyburd/redigo v1.0.1-0.20170216214944-0d253a66e6e1 // indirect
 	github.com/graphql-go/graphql v0.7.9-0.20190403165646-199d20bbfed7
-
 	github.com/minio/minio v0.0.0-20180508161510-54cd29b51c38
 	github.com/segmentio/go-prompt v1.2.1-0.20161017233205-f0d19b6901ad
 )
@@ -35,7 +34,7 @@ require (
 	github.com/fatih/structs v1.0.0 // indirect
 	github.com/go-ini/ini v1.38.2 // indirect
 	github.com/go-redis/redis v6.14.1+incompatible
-	github.com/gogo/protobuf v1.2.1
+	github.com/gogo/protobuf v1.3.2
 	github.com/golang-migrate/migrate/v4 v4.7.0
 	github.com/golang/protobuf v1.3.2
 	github.com/gomodule/redigo v2.0.0+incompatible // indirect
@@ -101,9 +100,9 @@ require (
 	github.com/zeebo/incenc v0.0.0-20180505221441-0d92902eec54 // indirect
 	github.com/zeebo/structs v1.0.2
 	go.uber.org/zap v1.10.0
-	golang.org/x/crypto v0.0.0-20191227163750-53104e6ec876
-	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
-	golang.org/x/sys v0.0.0-20200107144601-ef85f5a75ddf
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
+	golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9
+	golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0
 	google.golang.org/appengine v1.6.0 // indirect
 	google.golang.org/grpc v1.23.1
